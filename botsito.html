@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        /* UI más cálida y componentes interactivos */
+        #botsito-chat { position: fixed; right: 18px; bottom: 18px; width: 360px; font-family: Inter, system-ui, Arial, sans-serif; z-index: 9999; }
+        #botsito-toggle { background: linear-gradient(135deg,#0b74de,#0a5fb8); color:#fff; padding:12px 16px; border-radius:24px; cursor:pointer; box-shadow:0 8px 30px rgba(10,90,160,.25); display:flex; align-items:center; gap:10px; }
+        #botsito-toggle .dot { width:10px; height:10px; background:#7ef09a; border-radius:50%; box-shadow:0 0 8px rgba(126,240,154,.9); }
+
+        #botsito-window { display:none; margin-top:10px; border-radius:12px; overflow:hidden; box-shadow:0 12px 40px rgba(2,6,23,.25); background:linear-gradient(180deg,#ffffff,#f7fbff); }
+        #botsito-header { padding:12px 14px; display:flex; gap:10px; align-items:center; border-bottom:1px solid rgba(10,20,40,.04); }
+        #botsito-header img { width:40px; height:40px; border-radius:10px; }
+        #botsito-header .meta { display:flex; flex-direction:column; }
+        #botsito-header .meta b { font-size:14px; }
+        #botsito-header .meta small { color:#666; font-size:12px; }
+
+        #botsito-messages { max-height:330px; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
+        .botsito-msg { max-width:78%; padding:10px 12px; border-radius:12px; line-height:1.3; box-shadow:0 4px 14px rgba(10,20,40,.04); }
+        .botsito-user { margin-left:auto; background:linear-gradient(180deg,#0b74de,#084f9a); color:#fff; border-bottom-right-radius:4px; }
+        .botsito-bot { margin-right:auto; background:#fff; border:1px solid rgba(10,20,40,.04); color:#0b2340; }
+
+        .botsito-resources { display:flex; flex-direction:column; gap:8px; margin-top:6px; }
+        .resource { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px; border-radius:8px; background:linear-gradient(90deg,#f3f8ff,#ffffff); border:1px solid rgba(10,80,160,.06); }
+        .resource .info { display:flex; flex-direction:column; }
+        .resource .call { background:#0b74de; color:#fff; border-radius:8px; padding:6px 8px; text-decoration:none; font-weight:600; }
+
+        #botsito-input { display:flex; gap:8px; padding:10px; border-top:1px solid rgba(10,20,40,.04); align-items:center; background:linear-gradient(180deg,#fbfdff,#ffffff); }
+        #botsito-input input { flex:1; border:1px solid rgba(10,20,40,.06); padding:10px 12px; border-radius:10px; outline:none; font-size:14px; }
+        #botsito-input button { border:0; background:#0b74de; color:#fff; padding:10px 14px; border-radius:10px; cursor:pointer; }
+        .chips { display:flex; gap:8px; padding:8px 12px; flex-wrap:wrap; }
+        .chip { background:#eef6ff; color:#064a9a; padding:6px 10px; border-radius:999px; cursor:pointer; font-size:13px; border:1px solid rgba(10,80,160,.06); }
+
+        .typing { font-style:italic; color:#666; font-size:13px; margin-left:4px; }
+
+        small.botsito-note { display:block; padding:8px 12px; color:#445; font-size:12px; }
+    </style>
+
+    <script>
+    (function(){
+        const KEY = 'botsito_history_v2';
+        // configurable recursos (modifica a tus números institucionales)
+        const resources = [
+            {name:'Emergencias', phone:'112', desc:'Llama si hay peligro inminente'},
+            {name:'Línea de violencia y apoyo (ejemplo España)', phone:'016', desc:'Atención y orientación'},
+            {name:'Línea de ayuda a la infancia (UE)', phone:'116111', desc:'Ayuda para menores'},
+            {name:'Soporte escolar (ejemplo)', phone:'900123456', desc:'Consejería escolar'}
+        ];
+        const dict = ["hola","ayuda","acoso","ciberacoso","siento","gracias","adios","persona","insulto","amenaza","internet","seguro","recursos","psicologo","policia","denunciar","bloquear","soporte","estoy","mal","no","si","por","favor"];
+        const bullyingKeywords = ["acoso","insulto","amenaza","ciberacoso","bullying","hostigamiento"];
+
+        // Levenshtein para corrección simple
+        function lev(a,b){
+            const m=a.length,n=b.length; const d = Array.from({length:m+1},()=>Array(n+1).fill(0));
+            for(let i=0;i<=m;i++) d[i][0]=i;
+            for(let j=0;j<=n;j++) d[0][j]=j;
+            for(let i=1;i<=m;i++) for(let j=1;j<=n;j++){
+                const cost = a[i-1]===b[j-1]?0:1;
+                d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+cost);
+            }
+            return d[m][n];
+        }
+        function correctText(text){
+            return text.split(/\b/).map(token=>{
+                const w = token.toLowerCase();
+                if(!/^[a-zñáéíóúü]+$/i.test(w)) return token;
+                let best = {word:token, dist:99};
+                for(const t of dict){
+                    const dist = lev(w,t);
+                    if(dist < best.dist){ best = {word: t, dist}; }
+                }
+                if(best.dist>0 && best.dist<=2) {
+                    if(/^[A-ZÁÉÍÓÚÑÜ]/.test(token)) return best.word.charAt(0).toUpperCase() + best.word.slice(1);
+                    return best.word;
+                }
+                return token;
+            }).join('');
+        }
+        function detectBullying(text){
+            const t = text.toLowerCase();
+            return bullyingKeywords.some(k=> t.includes(k));
+        }
+        function saveHistory(h){
+            try{ localStorage.setItem(KEY, JSON.stringify(h)); }catch(e){}
+        }
+        function loadHistory(){ try{ return JSON.parse(localStorage.getItem(KEY))||[] }catch(e){ return [] } }
+
+        function render(){
+            const root = document.createElement('div'); root.id='botsito-chat';
+            const toggle = document.createElement('div'); toggle.id='botsito-toggle';
+            toggle.innerHTML = '<span class="dot"></span><strong>Botsito</strong>';
+            const win = document.createElement('div'); win.id='botsito-window';
+            // header
+            const header = document.createElement('div'); header.id='botsito-header';
+            const avatar = document.createElement('img'); avatar.src='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect rx="12" width="100%" height="100%" fill="%230b74de"/><text x="50%" y="55%" font-size="34" text-anchor="middle" fill="white" font-family="Arial">B</text></svg>';
+            const meta = document.createElement('div'); meta.className='meta'; meta.innerHTML='<b>Botsito — Apoyo</b><small>Interactúa, guarda conversaciones y accede a recursos.</small>';
+            header.appendChild(avatar); header.appendChild(meta);
+            // messages
+            const msgs = document.createElement('div'); msgs.id='botsito-messages';
+            const note = document.createElement('small'); note.className='botsito-note'; note.textContent='Sugerencias rápidas: utiliza los botones para acciones inmediatas.';
+            // chips (acciones rápidas)
+            const chips = document.createElement('div'); chips.className='chips';
+            const quick = ['Necesito ayuda','Quiero denunciar','Bloquear usuario','Recursos'];
+            quick.forEach(q=>{
+                const c = document.createElement('div'); c.className='chip'; c.textContent=q;
+                c.addEventListener('click', ()=> handleQuick(q));
+                chips.appendChild(c);
+            });
+
+            // input area
+            const inputWrap = document.createElement('div'); inputWrap.id='botsito-input';
+            const input = document.createElement('input'); input.placeholder='Escribe aquí...';
+            const btn = document.createElement('button'); btn.textContent='Enviar';
+            inputWrap.appendChild(input); inputWrap.appendChild(btn);
+
+            win.appendChild(header);
+            win.appendChild(msgs);
+            win.appendChild(note);
+            win.appendChild(chips);
+            win.appendChild(inputWrap);
+            root.appendChild(toggle); root.appendChild(win);
+            document.body.appendChild(root);
+
+            function appendMessage(text, cls, metaHtml){
+                const m = document.createElement('div'); m.className='botsito-msg '+cls;
+                if(metaHtml){
+                    m.innerHTML = metaHtml + '<div style="margin-top:6px;">' + escapeHtml(text) + '</div>';
+                } else {
+                    m.textContent = text;
+                }
+                msgs.appendChild(m); msgs.scrollTop = msgs.scrollHeight;
+                return m;
+            }
+            function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+            let history = loadHistory();
+            history.forEach(item => appendMessage(item.text, item.from==='user'?'botsito-user':'botsito-bot'));
+
+            function showTyping(){
+                const t = document.createElement('div'); t.className='typing botsito-bot'; t.textContent='Botsito está escribiendo...';
+                msgs.appendChild(t); msgs.scrollTop = msgs.scrollHeight;
+                return ()=>{ t.remove(); };
+            }
+
+            function showResources(){
+                const container = document.createElement('div'); container.className='botsito-resources botsito-bot';
+                resources.forEach(r=>{
+                    const row = document.createElement('div'); row.className='resource';
+                    const info = document.createElement('div'); info.className='info';
+                    const name = document.createElement('b'); name.textContent = r.name;
+                    const desc = document.createElement('small'); desc.textContent = r.desc;
+                    info.appendChild(name); info.appendChild(desc);
+                    const call = document.createElement('a'); call.className='call'; call.href = 'tel:'+r.phone; call.textContent = r.phone;
+                    row.appendChild(info); row.appendChild(call);
+                    container.appendChild(row);
+                });
+                const hint = document.createElement('div'); hint.style.marginTop='6px'; hint.style.fontSize='12px'; hint.style.color='#444'; hint.textContent='Pulsa un número para llamar (desde un dispositivo con capacidad de llamada) o usa los recursos como referencia.';
+                container.appendChild(hint);
+                const wrapper = document.createElement('div');
+                wrapper.appendChild(container);
+                appendMessage('', 'botsito-bot', wrapper.innerHTML);
+            }
+
+            function botReply(raw){
+                const corrected = correctText(raw);
+                const undel = showTyping();
+                setTimeout(()=>{
+                    undel();
+                    if(detectBullying(raw) || detectBullying(corrected)){
+                        const r = "Detecto que hay indicios de acoso. Si existe riesgo inmediato, llama ahora a Emergencias. Aquí tienes recursos y números de apoyo:";
+                        saveAndShow('bot', r);
+                        showResources();
+                        // ofrecer acciones rápidas
+                        const actionText = "¿Quieres que guarde esta conversación o que genere un resumen para compartir con alguien de confianza?";
+                        saveAndShow('bot', actionText);
+                        // buttons below as chips
+                        const actions = ['Guardar conversación','Generar resumen','Contactar línea'];
+                        const actionsDiv = document.createElement('div'); actionsDiv.className='chips';
+                        actions.forEach(a=>{
+                            const c = document.createElement('div'); c.className='chip'; c.textContent=a;
+                            c.addEventListener('click', ()=> {
+                                if(a==='Guardar conversación'){ saveAndShow('bot','Conversación guardada. Puedes revisarla en este navegador.'); }
+                                if(a==='Generar resumen'){ saveAndShow('bot','Resumen: '+generateSummary(history)); }
+                                if(a==='Contactar línea'){ showResources(); }
+                            });
+                            actionsDiv.appendChild(c);
+                        });
+                        msgs.appendChild(actionsDiv); msgs.scrollTop = msgs.scrollHeight;
+                        return;
+                    }
+                    // respuestas más interactivas según intentos
+                    const low = raw.toLowerCase();
+                    if(/hola|buenas|hey/.test(low)){
+                        saveAndShow('bot', "Hola. Soy Botsito. ¿Cómo te gustaría que te ayude hoy? Puedes pedir: consejo, recursos, o guardar la conversación.");
+                        return;
+                    }
+                    if(/gracias|vale|ok|perfecto/.test(low)){
+                        saveAndShow('bot', "Me alegra ayudar. ¿Deseas que guarde esta conversación para consultarla luego?");
+                        return;
+                    }
+                    if(/denunci|reportar|denunciar/.test(low)){
+                        saveAndShow('bot', "Si quieres denunciar, puedo mostrarte los pasos y contactos. ¿Deseas ver los números y enlaces?");
+                        showResources();
+                        return;
+                    }
+                    // por defecto: devolver con corrección y ofrecer chips para continuar
+                    saveAndShow('bot', "Lo entiendo — " + corrected);
+                    const cont = document.createElement('div'); cont.className='chips';
+                    ['¿Qué puedo hacer?','Mostrar recursos','Guardar'].forEach(t=>{
+                        const c = document.createElement('div'); c.className='chip'; c.textContent=t;
+                        c.addEventListener('click', ()=> handleQuick(t));
+                        cont.appendChild(c);
+                    });
+                    msgs.appendChild(cont); msgs.scrollTop = msgs.scrollHeight;
+                }, 700 + Math.random()*700);
+            }
+
+            function generateSummary(h){
+                const last = h.slice(-6).map(it => (it.from==='user'?'Tú: ':'Botsito: ') + it.text).join(' | ');
+                return last || 'No hay suficiente contenido para resumir.';
+            }
+
+            function saveAndShow(from,text){
+                appendMessage(text, from==='user'?'botsito-user':'botsito-bot');
+                history.push({from:from==='user'?'user':'bot', text});
+                saveHistory(history);
+            }
+
+            function handleQuick(q){
+                if(q==='Recursos' || q==='Contactar línea' || q==='Mostrar recursos'){ showResources(); return; }
+                if(q==='Bloquear usuario' || q==='Bloquear'){ saveAndShow('bot','Si quieres bloquear al usuario, buscas en la configuración de la plataforma la opción "Bloquear" o "Reportar".'); return; }
+                if(q==='Necesito ayuda'){ saveAndShow('bot','¿Puedes decir brevemente qué está pasando? Si hay peligro inmediato llama al número de emergencias.'); return; }
+                if(q==='Quiero denunciar' || q==='Denunciar'){ showResources(); saveAndShow('bot','Te muestro contactos y pasos habituales para denunciar.'); return; }
+                if(q==='¿Qué puedo hacer?'){ saveAndShow('bot','Opciones: 1) Guardar conversación, 2) Contactar a un adulto de confianza, 3) Llamar a líneas de apoyo. ¿Cuál prefieres?'); return; }
+                if(q==='Guardar conversación' || q==='Guardar'){ saveAndShow('bot','Conversación guardada.'); return; }
+                if(q==='Generar resumen'){ saveAndShow('bot','Resumen: '+generateSummary(history)); return; }
+                // si el chip es una frase para enviar como usuario
+                sendUserMessage(q);
+            }
+
+            function sendUserMessage(text){
+                saveAndShow('user', text);
+                setTimeout(()=>botReply(text), 300);
+            }
+
+            toggle.addEventListener('click', ()=>{ win.style.display = win.style.display==='block' ? 'none' : 'block'; });
+            btn.addEventListener('click', ()=>{ const v=input.value.trim(); if(!v) return; sendUserMessage(v); input.value=''; });
+            input.addEventListener('keydown', e=>{ if(e.key==='Enter'){ btn.click(); } });
+
+            // permitir borrar historial desde el UI con doble clic en título (no obvio)
+            header.addEventListener('dblclick', ()=>{ if(confirm('Borrar historial local de Botsito?')){ history=[]; saveHistory(history); msgs.innerHTML=''; saveAndShow('bot','Historial borrado.'); } });
+
+        }
+
+        // iniciar cuando cargue DOM
+        if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', render); else render();
+    })();
+    </script>
+    <title>Document</title>
+</head>
+<body>
+    
+</body>
+</html>
